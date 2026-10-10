@@ -12,12 +12,15 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.x'
+      - name: Create audit output directory
+        run: mkdir -p 04_Search_Audit/ENV-NCBI-003
       - name: Run controlled NCBI preflight
-        working-directory: 04_Search_Audit/ENV-NCBI-003
-        run: python ../../../scripts/env_ncbi_003.py
+        run: python scripts/env_ncbi_003.py --output-dir 04_Search_Audit/ENV-NCBI-003
       - name: Upload evidence
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ENV-NCBI-003-evidence
           path: 04_Search_Audit/ENV-NCBI-003/
+          if-no-files-found: warn
           retention-days: 14
