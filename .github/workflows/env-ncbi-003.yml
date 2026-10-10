@@ -1,0 +1,23 @@
+name: ENV-NCBI-003
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  ncbi-preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Run controlled NCBI preflight
+        working-directory: 04_Search_Audit/ENV-NCBI-003
+        run: python ../../../scripts/env_ncbi_003.py
+      - name: Upload evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: ENV-NCBI-003-evidence
+          path: 04_Search_Audit/ENV-NCBI-003/
+          retention-days: 14
