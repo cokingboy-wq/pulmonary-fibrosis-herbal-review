@@ -1,0 +1,24 @@
+{
+  "config_id": "SR-PUBMED-002-000",
+  "status": "FROZEN_FOR_PREPARATION_ONLY",
+  "formal_execution_started": false,
+  "run_id": null,
+  "frozen_source": "PubMed_v1_2_Frozen_B31",
+  "source_file": "D:\\Pulmonary_Fibrosis_SR\\02_Search_Strategies\\PubMed_SR-PUBMED-001_query.txt",
+  "source_sha256": "13aeeda4c5138fa93e2fdeb1a4c028d5e5aaa422aad410c2e440c091f241fa51",
+  "database": "pubmed",
+  "endpoint": "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/",
+  "planned_operations": [
+    "ESearch",
+    "EFetch"
+  ],
+  "execution_trigger": "manual workflow_dispatch only",
+  "safeguards": [
+    "no formal execution in preparation workflow",
+    "no PRISMA update",
+    "no screening",
+    "no reuse of SR-PUBMED-001 records",
+    "no modification of frozen query"
+  ],
+  "created_utc": "2026-10-12T00:02:31.1248483Z"
+}
