@@ -1,0 +1,24 @@
+name: SR-PUBMED-002-000-prepare
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  preparation-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify preparation-only freeze
+        run: |
+          test -f 02_Search_Strategies/SR-PUBMED-002-000_config_freeze.json
+          python - <<'PY'
+          import json
+          p="02_Search_Strategies/SR-PUBMED-002-000_config_freeze.json"
+          c=json.load(open(p))
+          assert c["status"] == "FROZEN_FOR_PREPARATION_ONLY"
+          assert c["formal_execution_started"] is False
+          assert c["run_id"] is None
+          print("Preparation verified; no formal search executed.")
+          PY
+
