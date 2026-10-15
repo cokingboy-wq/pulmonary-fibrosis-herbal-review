@@ -37,8 +37,8 @@ class ArtifactTests(unittest.TestCase):
         rows=[{'path':p.name,'bytes':p.stat().st_size,'sha256':m.sha(p.read_bytes())} for p in out.iterdir() if p.name!='sha256_manifest.json']
         (out/'sha256_manifest.json').write_text(json.dumps({'files':rows}))
     def test_verified_full(self):
-        out=self.build();self.assertEqual(v.verify_zip(self.zip(out),self.parent/'download')['status'],'VERIFIED_API_RETRIEVAL')
-    def test_valid_zero(self):self.assertEqual(v.verify_directory(self.build(zero=True))['status'],'VERIFIED_API_RETRIEVAL')
+        out=self.build();self.assertEqual(v.verify_zip(self.zip(out),self.parent/'download')['status'],'SIMULATION_ONLY')
+    def test_valid_zero(self):self.assertEqual(v.verify_directory(self.build(zero=True))['status'],'SIMULATION_ONLY')
     def test_verified_failure(self):self.assertEqual(v.verify_directory(self.build(fail=True))['status'],'VERIFIED_FAILURE')
     def test_missing_raw(self):
         out=self.build();(out/'efetch_0.attempt1.raw').unlink();self.assertEqual(v.verify_directory(out)['status'],'INVALID_EVIDENCE')

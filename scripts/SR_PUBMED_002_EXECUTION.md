@@ -33,7 +33,7 @@ Importing modules and all committed unit tests use no live NCBI requests.
 * No filtering tables or PRISMA counts are written by this program.
 
 Offline ZIP acceptance (extracts only to a new destination):
-python scripts/verify_sr_pubmed_002_artifact.py --zip evidence.zip --destination new-download
+python scripts/verify_sr_pubmed_002_artifact.py --zip evidence.zip --destination new-download --provenance independently-captured-github.json
 
 The verifier independently parses logs, XML, MEDLINE, hashes, saved ID order and
 report reconciliation. It returns VERIFIED_API_RETRIEVAL, VERIFIED_INCOMPLETE,
@@ -41,6 +41,24 @@ VERIFIED_FAILURE or INVALID_EVIDENCE. Simulated artifacts remain explicitly
 marked simulation and cannot serve as real external connectivity evidence.
 The manifest and ZIP digests must be anchored to separately retained GitHub upload
 metadata; self-consistent hashes alone cannot authenticate an entire forged ZIP.
+Complete simulated evidence returns SIMULATION_ONLY, never VERIFIED_API_RETRIEVAL.
+Directory-only complete evidence returns INTERNAL_API_CONSISTENT. Formal ZIP
+acceptance additionally requires explicit simulation=false throughout metadata,
+matching initial/final/event/report run identities and independently supplied GitHub
+repository, run ID, attempt, commit SHA, artifact ID/name, source API URL and ZIP
+SHA256. Missing external digest refuses formal acceptance. CLI provenance must be
+outside the extraction directory and is never read from ZIP entries.
+
+The provenance capture is a trust input: obtain it using authenticated GitHub API
+outside the ZIP, retain the raw API responses and capture timestamp independently,
+then normalize these exact fields into JSON: repository, run_id, run_attempt,
+commit_sha, artifact_id, artifact_name, zip_sha256, source_url, artifact_run_id,
+artifact_commit_sha. The last two come from the artifact API's workflow_run
+association, not from the ZIP. All are strings;
+source_url is https://api.github.com/repos/OWNER/REPO/actions/artifacts/ARTIFACT_ID.
+Offline comparison does not authenticate who produced a caller-supplied JSON and
+is not a signature verifier. Its source result is MATCHED_INDEPENDENT_GITHUB_CAPTURE,
+not a claim of cryptographic attestation. Never manufacture unavailable GitHub digests.
 MEDLINE terminal newline/structure checks do not prove semantic completeness of
 a syntactically valid silently truncated body. No extra network cross-check is added.
 

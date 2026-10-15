@@ -35,6 +35,7 @@ def verify_directory(base):
         term=source.decode().split('\n\n',1)[1].rstrip('\r\n')
         if digest(term.encode())!='9db3953a99b295813d21f30e3af8af278b13d45c154be8bb794a878cb27f6ddf':raise ValueError('Query body mismatch')
         report=read_json(base/'final_report.json'); meta=read_json(base/'run_metadata.json')
+        if type(meta.get('simulation')) is not bool:raise ValueError('simulation must be explicitly boolean')
         if report['run_id']!=meta['run_id']:raise ValueError('Run identities disagree')
         events=[json.loads(line) for line in (base/'requests.jsonl').read_text().splitlines()]
         starts={(e['batch'],e['attempt']) for e in events if e.get('event')=='ATTEMPT_STARTED'}
@@ -115,15 +116,43 @@ def verify_directory(base):
         status=report.get('status')
         if status=='API_RETRIEVAL_COMPLETE':
             if not complete or report.get('errors') or report.get('fetched_count')!=count:raise ValueError('False completion: '+(reason if not complete else 'report mismatch'))
-            return {'status':'VERIFIED_API_RETRIEVAL','web_evidence':'PENDING_WEB_EVIDENCE','simulation':meta.get('simulation',False)}
+            if meta['simulation'] and not meta['run_id'].startswith('SIMULATION-'):raise ValueError('Simulation impersonates formal run')
+            return {'status':'SIMULATION_ONLY' if meta['simulation'] else 'INTERNAL_API_CONSISTENT',
+                    'internal_consistency':'PASS','external_authenticity':'NOT_VERIFIED',
+                    'web_evidence':'PENDING_WEB_EVIDENCE','simulation':meta['simulation']}
         if complete:raise ValueError('Failure report contradicts complete raw evidence')
-        if status=='INCOMPLETE' and report.get('errors'):return {'status':'VERIFIED_INCOMPLETE','reason':reason}
-        if status=='FAILED' and report.get('errors'):return {'status':'VERIFIED_FAILURE','reason':reason}
+        if status=='INCOMPLETE' and report.get('errors'):return {'status':'VERIFIED_INCOMPLETE','reason':reason,'internal_consistency':'PASS','external_authenticity':'NOT_VERIFIED'}
+        if status=='FAILED' and report.get('errors'):return {'status':'VERIFIED_FAILURE','reason':reason,'internal_consistency':'PASS','external_authenticity':'NOT_VERIFIED'}
         raise ValueError('Unrecognized or unjustified report status')
     except (OSError,ValueError,KeyError,TypeError,zipfile.BadZipFile) as exc:
         return {'status':'INVALID_EVIDENCE','errors':[str(exc)]}
 
-def verify_zip(zip_path,destination):
+def authenticate_origin(base, provenance, zip_hash):
+    """Compare an independently supplied GitHub API capture; never derive expected ZIP hash from ZIP."""
+    if not provenance:raise ValueError('Independent GitHub provenance absent')
+    p=provenance
+    required=('repository','run_id','run_attempt','commit_sha','artifact_id','artifact_name','zip_sha256','source_url','artifact_run_id','artifact_commit_sha')
+    if any(not isinstance(p.get(k),str) or not p[k] for k in required):raise ValueError('Incomplete external provenance')
+    repo='cokingboy-wq/pulmonary-fibrosis-herbal-review'
+    if p['repository']!=repo or p['source_url']!='https://api.github.com/repos/'+repo+'/actions/artifacts/'+p['artifact_id']:
+        raise ValueError('Artifact source/repository mismatch')
+    if not all(p[k].isdigit() for k in ('run_id','run_attempt','artifact_id')) or not re.fullmatch('[0-9a-f]{40}',p['commit_sha']):raise ValueError('Invalid source identifiers')
+    if not re.fullmatch('[0-9a-f]{64}',p['zip_sha256']) or p['zip_sha256']!=zip_hash:raise ValueError('Missing or mismatched external ZIP digest')
+    if p['artifact_name']!='SR-PUBMED-002-'+p['run_id']+'-'+p['run_attempt']:raise ValueError('Artifact name identity mismatch')
+    if p['artifact_run_id']!=p['run_id'] or p['artifact_commit_sha']!=p['commit_sha']:raise ValueError('Artifact workflow association mismatch')
+    initial=read_json(base/'run_metadata_initial.json');meta=read_json(base/'run_metadata.json');report=read_json(base/'final_report.json')
+    for document in [initial,meta,report]+[read_json(x) for x in base.glob('metadata_event_*.json')]:
+        if document.get('simulation') is not False:raise ValueError('Not explicitly a real execution')
+        if document.get('run_id')!=meta['run_id']:raise ValueError('Formal run identities disagree')
+        for local,external in [('github_repository','repository'),('github_run_id','run_id'),('github_run_attempt','run_attempt'),('commit_sha','commit_sha')]:
+            if document.get(local)!=p[external]:raise ValueError('Identity/provenance mismatch: '+local)
+    if not re.fullmatch(r'SR-PUBMED-002-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{12}',meta['run_id']):raise ValueError('Invalid formal execution identity')
+    return {'status':'MATCHED_INDEPENDENT_GITHUB_CAPTURE','repository':repo,'run_id':p['run_id'],
+            'run_attempt':p['run_attempt'],'commit_sha':p['commit_sha'],'artifact_id':p['artifact_id'],
+            'artifact_name':p['artifact_name'],'github_zip_sha256':p['zip_sha256'],'local_zip_sha256':zip_hash,
+            'trust_boundary':'Caller must obtain provenance through authenticated GitHub independently; offline comparison is not a cryptographic attestation.'}
+
+def verify_zip(zip_path,destination, provenance=None):
     try:
         source=Path(zip_path); zip_hash=digest(source.read_bytes());dest=Path(destination)
         if dest.exists():raise ValueError('Destination exists; refusing overwrite')
@@ -152,10 +181,21 @@ def verify_zip(zip_path,destination):
             manifests=list(dest.rglob('sha256_manifest.json'))
             if len(manifests)!=1:raise ValueError('Expected exactly one run evidence manifest')
             result=verify_directory(manifests[0].parent);result['zip_sha256']=zip_hash
+            if result['status']=='INTERNAL_API_CONSISTENT':
+                try:
+                    result['origin']=authenticate_origin(manifests[0].parent,provenance,zip_hash)
+                    result.update(status='VERIFIED_API_RETRIEVAL',external_authenticity='MATCHED_INDEPENDENT_GITHUB_CAPTURE')
+                except (OSError,ValueError,KeyError,TypeError) as exc:
+                    result.update(status='INVALID_EVIDENCE',external_authenticity='FAILED',errors=[str(exc)])
             return result
     except (OSError,ValueError,zipfile.BadZipFile) as exc:return {'status':'INVALID_EVIDENCE','errors':[str(exc)]}
 
 if __name__=='__main__':
-    p=argparse.ArgumentParser();p.add_argument('--zip',required=True);p.add_argument('--destination',required=True)
-    a=p.parse_args();r=verify_zip(a.zip,a.destination);print(json.dumps(r,indent=2))
-    raise SystemExit(1 if r['status']=='INVALID_EVIDENCE' else 0)
+    p=argparse.ArgumentParser();p.add_argument('--zip',required=True);p.add_argument('--destination',required=True);p.add_argument('--provenance')
+    a=p.parse_args()
+    provenance=None
+    if a.provenance:
+        if Path(a.provenance).resolve().is_relative_to(Path(a.destination).resolve()):p.error('Provenance must be outside extraction directory')
+        provenance=read_json(Path(a.provenance))
+    r=verify_zip(a.zip,a.destination,provenance);print(json.dumps(r,indent=2))
+    raise SystemExit(0 if r['status']=='VERIFIED_API_RETRIEVAL' else 1)

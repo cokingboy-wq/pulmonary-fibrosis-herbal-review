@@ -6,6 +6,7 @@ import json
 import os
 import platform
 import re
+import sys
 import time
 import urllib.error
 import urllib.parse
@@ -196,6 +197,7 @@ def execute(query_file, parent, batch_size=200, client_factory=Client, simulatio
         'query_sha256': EXPECTED, 'timestamp_utc': now(), 'python': platform.python_version(),
         'runner': platform.platform(), 'github_run_id': os.getenv('GITHUB_RUN_ID'),
         'github_run_attempt': os.getenv('GITHUB_RUN_ATTEMPT'), 'commit_sha': os.getenv('GITHUB_SHA')}
+    metadata['github_repository'] = os.getenv('GITHUB_REPOSITORY')
     write_json(out / 'run_metadata_initial.json', metadata)
     (out / 'frozen_source.txt').write_bytes(Path(query_file).read_bytes())
     states = ['NOT_ATTEMPTED','REQUEST_ATTEMPTED','HTTP_RESPONSE_RECEIVED','VALID_SEARCH_RESULT']
@@ -272,6 +274,7 @@ def execute(query_file, parent, batch_size=200, client_factory=Client, simulatio
             'missing': sorted(set(ids)-set(fetched)), 'unexpected': sorted(set(fetched)-set(ids)),
             'duplicate_fetched_count': len(fetched)-len(set(fetched))}
         report.update(run_id=run_id, ncbi_accessed=metadata['ncbi_accessed'], completed_utc=now())
+        report.update({k: metadata[k] for k in ('simulation','github_run_id','github_run_attempt','commit_sha','github_repository')})
         try:
             write_json(out / 'final_report.json', report)
             manifest = [{'path': p.name, 'bytes': p.stat().st_size, 'sha256': sha(p.read_bytes())}
