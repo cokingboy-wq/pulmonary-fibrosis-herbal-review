@@ -1,0 +1,55 @@
+{
+  "name": "SR-PUBMED-002 offline acceptance",
+  "on": {
+    "workflow_dispatch": {}
+  },
+  "permissions": {
+    "contents": "read"
+  },
+  "jobs": {
+    "offline-acceptance": {
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 20,
+      "steps": [
+        {
+          "uses": "actions/checkout@v4",
+          "with": {
+            "fetch-depth": 0
+          }
+        },
+        {
+          "uses": "actions/setup-python@v5",
+          "with": {
+            "python-version": "3.12"
+          }
+        },
+        {
+          "name": "Static and syntax checks (no imports or database requests)",
+          "run": "git merge-base --is-ancestor ca5e29388f4416665426f033f55dbb653067fdec HEAD\npython -m compileall -q scripts tests\ncommand -v unshare\ncommand -v setpriv\ncommand -v ip"
+        },
+        {
+          "name": "Run all offline tests in isolated network namespace",
+          "shell": "bash",
+          "run": "set -euo pipefail\nPYTHON=\"$(command -v python)\"\nHOST_NETNS=\"$(readlink /proc/self/ns/net)\"\nOUTPUT=\"$GITHUB_WORKSPACE/04_Search_Audit/SR-PUBMED-002-001-G/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT\"\nsudo --preserve-env=GITHUB_REPOSITORY,GITHUB_RUN_ID,GITHUB_RUN_ATTEMPT,GITHUB_SHA,RUNNER_NAME,ImageOS,ImageVersion unshare --net -- setpriv --reuid=\"$(id -u)\" --regid=\"$(id -g)\" --clear-groups --bounding-set=-all --inh-caps=-all --ambient-caps=-all --no-new-privs \"$PYTHON\" scripts/run_pubmed_offline_acceptance.py --output-dir \"$OUTPUT\" --host-netns \"$HOST_NETNS\""
+        },
+        {
+          "name": "Preserve infrastructure failure when audit launcher did not start",
+          "if": "always()",
+          "shell": "bash",
+          "run": "python - <<'PY'\nimport os,json,pathlib,datetime\np=pathlib.Path('04_Search_Audit/SR-PUBMED-002-001-G')/(os.environ['GITHUB_RUN_ID']+'-'+os.environ['GITHUB_RUN_ATTEMPT'])\np.mkdir(parents=True,exist_ok=True)\nif not (p/'final-acceptance-report.json').exists():\n    with (p/'launcher-failure.json').open('x') as f:\n        json.dump({'status':'FAIL','tests':'NOT_EXECUTED_OR_INTERRUPTED','reason':'See actual GitHub step logs; no cloud success inferred','utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),'repository':os.environ['GITHUB_REPOSITORY'],'run_id':os.environ['GITHUB_RUN_ID'],'run_attempt':os.environ['GITHUB_RUN_ATTEMPT'],'commit_sha':os.environ['GITHUB_SHA']},f,indent=2)\nPY"
+        },
+        {
+          "name": "Upload offline audit evidence",
+          "if": "always()",
+          "uses": "actions/upload-artifact@v4",
+          "with": {
+            "name": "SR-PUBMED-002-001-G-${{ github.run_id }}-${{ github.run_attempt }}",
+            "path": "04_Search_Audit/SR-PUBMED-002-001-G/${{ github.run_id }}-${{ github.run_attempt }}/",
+            "retention-days": 90,
+            "if-no-files-found": "warn"
+          }
+        }
+      ]
+    }
+  }
+}
