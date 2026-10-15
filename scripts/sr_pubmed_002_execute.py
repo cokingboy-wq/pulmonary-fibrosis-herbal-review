@@ -157,11 +157,16 @@ def parse_search(body):
 def check_page(root, count, expected_count, start, size, webenv=None, key=None):
     if count != expected_count or int(root.findtext('RetStart')) != start or int(root.findtext('RetMax')) != size:
         raise ValueError('ESearch Count or returned page boundaries mismatch')
-    for tag, expected in (('WebEnv', webenv), ('QueryKey', key)):
-        actual = root.findtext(tag)
-        # Returned history fields are optional on pages; never permit conflicting ones.
-        if actual is not None and expected is not None and actual != expected:
-            raise ValueError('History context changed: ' + tag)
+    actual_env = root.findtext('WebEnv')
+    if actual_env is not None and actual_env != webenv:
+        raise ValueError('History context changed: WebEnv')
+    # usehistory=y posts a result set. Its output key need not be the source key.
+    # Only the INITIAL source key is used in requests; the output key is audited.
+    output_key = root.findtext('QueryKey')
+    if output_key is not None and not re.fullmatch(r'[1-9][0-9]*', output_key):
+        raise ValueError('Invalid output History QueryKey')
+    if root.find('.//WarningList') is not None:
+        raise ValueError('History page contains server warnings')
     page = [x.text for x in root.findall('IdList/Id')]
     if len(page) != size or any(not x or not x.isdigit() for x in page):
         raise ValueError('Invalid PMID page')
@@ -213,7 +218,7 @@ def execute(query_file, parent, batch_size=200, client_factory=Client, simulatio
     client = client_factory(out, observer=observe, **options)
     report = {'status': 'FAILED', 'web_evidence_status': 'PENDING_WEB_EVIDENCE',
               'web_search_details': 'PENDING_WEB_EVIDENCE',
-              'web_search_history': 'PENDING_WEB_EVIDENCE', 'batches': [], 'errors': []}
+              'web_search_history': 'PENDING_WEB_EVIDENCE', 'batches': [], 'history_pages': [], 'errors': []}
     ids, fetched = [], []
     try:
         raw = client.request('esearch.fcgi', {'db': 'pubmed', 'term': query,
@@ -239,6 +244,9 @@ def execute(query_file, parent, batch_size=200, client_factory=Client, simulatio
                 'term': '#' + key, 'WebEnv': webenv, 'usehistory': 'y', 'retstart': start,
                 'retmax': min(batch_size, count-start), 'retmode': 'xml'}, 'esearch_' + str(start)))
             page = check_page(root,n,count,start,min(batch_size,count-start),webenv,key)
+            report['history_pages'].append({'source_webenv':webenv,'source_query_key':key,
+                'response_webenv':root.findtext('WebEnv'),'response_query_key':root.findtext('QueryKey'),
+                'retstart':start,'retmax':len(page),'count':n,'pmids':page})
             if set(ids).intersection(page):
                 raise ValueError('Overlapping pages')
             ids.extend(page)

@@ -72,20 +72,25 @@ def verify_directory(base):
             if count<0 or count>9999 or not web or not key.isdigit() or not root.findtext('QueryTranslation') or int(root.findtext('RetStart'))!=0 or int(root.findtext('RetMax'))!=0:raise ValueError('Initial search invalid')
             if report.get('count')!=count or report.get('query_translation')!=root.findtext('QueryTranslation'):raise ValueError('Report/search mismatch')
             pages=sorted((e for n,e in successes.items() if n.startswith('esearch_') and n!='esearch_initial'),key=lambda e:int(e['parameters']['retstart']))
-            position=0
+            position=0;history_pages=[]
             for e in pages:
                 p=e['parameters']; r=ET.fromstring((base/e['file']).read_bytes()); n=int(p['retmax'])
                 if p.get('retmode')!='xml':raise ValueError('Wrong page format')
                 if p.get('usehistory')!='y':raise ValueError('History page request missing usehistory=y')
                 if p.get('WebEnv')!=web or p.get('term')!='#'+key or int(p['retstart'])!=position:raise ValueError('History/gap/order mismatch')
                 if r.tag!='eSearchResult' or int(r.findtext('Count'))!=count or int(r.findtext('RetStart'))!=position or int(r.findtext('RetMax'))!=n:raise ValueError('Page boundary mismatch')
-                for tag,expected in [('WebEnv',web),('QueryKey',key)]:
-                    if r.findtext(tag) is not None and r.findtext(tag)!=expected:raise ValueError('Returned history mismatch')
+                if r.findtext('WebEnv') is not None and r.findtext('WebEnv')!=web:raise ValueError('Returned WebEnv mismatch')
+                output_key=r.findtext('QueryKey')
+                if output_key is not None and not re.fullmatch(r'[1-9][0-9]*',output_key):raise ValueError('Invalid output History key')
+                if r.find('.//WarningList') is not None or r.find('.//ERROR') is not None or r.find('.//ErrorList') is not None:raise ValueError('History page server error/warning')
                 page=[x.text for x in r.findall('IdList/Id')]
                 if len(page)!=n or n<=0 or position+n>count:raise ValueError('Page cardinality mismatch')
+                history_pages.append({'source_webenv':web,'source_query_key':key,'response_webenv':r.findtext('WebEnv'),
+                    'response_query_key':output_key,'retstart':position,'retmax':n,'count':count,'pmids':page})
                 ids.extend(page);position+=n
             if len(ids)!=count or len(set(ids))!=count or any(not x or not x.isdigit() for x in ids):raise ValueError('PMID completeness mismatch')
             if read_json(base/'pmids_ordered.json')!=ids:raise ValueError('Saved PMID order mismatch')
+            if report.get('history_pages')!=history_pages:raise ValueError('Report History source/output binding mismatch')
             position=0
             for e in sorted((e for n,e in successes.items() if n.startswith('efetch_')),key=lambda e:int(e['batch'].split('_')[1])):
                 if e['parameters'].get('retmode')!='text' or e['parameters'].get('rettype')!='medline':raise ValueError('Wrong fetch format')
