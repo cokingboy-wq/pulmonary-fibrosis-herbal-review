@@ -40,8 +40,21 @@ def load_query(path):
     return query
 
 def write_json(path, value):
-    with Path(path).open('x', encoding='utf-8') as f:
+    path = Path(path)
+    temp = path.with_name(path.name + '.' + uuid.uuid4().hex + '.tmp')
+    with temp.open('x', encoding='utf-8') as f:
         json.dump(value, f, indent=2, ensure_ascii=False)
+        f.flush()
+        os.fsync(f.fileno())
+    # Atomic publication without replacing an existing evidence file.
+    os.link(temp, path)
+    temp.unlink()
+
+def log_event(path, value):
+    with Path(path).open('a', encoding='utf-8') as f:
+        f.write(json.dumps(value) + '\n')
+        f.flush()
+        os.fsync(f.fileno())
 
 class Client:
     def __init__(self, out, timeout=30, retries=2, delay=0.4, opener=None, sleep=time.sleep, observer=None):
@@ -60,11 +73,12 @@ class Client:
                      'batch': name}
             started = time.monotonic()
             retry = False
-            self.observer('REQUEST_ATTEMPTED')
+            log_event(self.out / 'requests.jsonl', dict(entry, event='ATTEMPT_STARTED'))
             try:
+                self.observer('REQUEST_ATTEMPTED')
                 req = urllib.request.Request(BASE + endpoint, data=encoded,
                     headers={'User-Agent': 'PulmonaryFibrosisSR/2',
-                             'Content-Type': 'application/x-www-form-urlencoded'})
+                             'Content-Type': 'application/x-www-form-urlencoded', 'Accept-Encoding': 'identity'})
                 try:
                     response = self.opener(req, timeout=self.timeout)
                 except urllib.error.HTTPError as exc:
@@ -76,14 +90,27 @@ class Client:
                     path = self.out / (name + '.attempt' + str(attempt + 1) + '.raw')
                     with path.open('xb') as f:
                         try:
-                            body = r.read()
-                            f.write(body)
+                            while True:
+                                chunk = r.read(65536)
+                                if not chunk:
+                                    break
+                                f.write(chunk)
+                                f.flush()
                         except http.client.IncompleteRead as exc:
                             f.write(exc.partial)
                             raise
                         finally:
                             f.flush()
+                            os.fsync(f.fileno())
+                    body = path.read_bytes()
                     entry.update(file=path.name, bytes=path.stat().st_size, sha256=sha(path.read_bytes()))
+                    lengths = [v for k,v in r.headers.items() if k.lower() == 'content-length']
+                    enc = next((v for k,v in r.headers.items() if k.lower() == 'content-encoding'), 'identity')
+                    if enc.lower() != 'identity':
+                        raise ValueError('Unsupported content encoding; raw evidence retained')
+                    if lengths and (len(lengths) != 1 or int(lengths[0]) != len(body)):
+                        raise ValueError('Content-Length mismatch')
+                    entry['transport_complete'] = True
                 if path.read_bytes() != body:
                     raise ValueError('Persistence mismatch')
                 entry.update(file=path.name, bytes=len(body), sha256=sha(body))
@@ -92,7 +119,7 @@ class Client:
                 if status != 200:
                     raise ValueError('HTTP ' + str(status))
                 return body
-            except (OSError, ValueError, http.client.HTTPException) as exc:
+            except (OSError, ValueError, http.client.HTTPException, KeyboardInterrupt) as exc:
                 entry['error'] = str(exc)
                 if path is not None and path.exists():
                     entry.update(file=path.name, bytes=path.stat().st_size, sha256=sha(path.read_bytes()))
@@ -106,29 +133,52 @@ class Client:
                 entry['elapsed_seconds'] = time.monotonic() - started
                 self.attempts.append(entry)
                 # Append-only evidence survives later failures.
-                with (self.out / 'requests.jsonl').open('a', encoding='utf-8') as f:
-                    f.write(json.dumps(entry) + '\n')
+                log_event(self.out / 'requests.jsonl', dict(entry, event='ATTEMPT_FINISHED'))
 
 def parse_search(body):
     root = ET.fromstring(body)
-    if root.find('ERROR') is not None or root.find('ErrorList') is not None:
+    if root.find('.//ERROR') is not None or root.find('.//ErrorList') is not None:
         raise ValueError('ESearch server error')
     if root.tag != 'eSearchResult' or int(root.findtext('Count')) < 0:
         raise ValueError('Invalid ESearch result')
+    for tag in ('RetStart', 'RetMax', 'IdList', 'QueryTranslation'):
+        if root.find(tag) is None:
+            raise ValueError('Missing ESearch field: ' + tag)
+    if not (root.findtext('QueryTranslation') or '').strip():
+        raise ValueError('Empty QueryTranslation')
+    if int(root.findtext('RetStart')) < 0 or int(root.findtext('RetMax')) < 0:
+        raise ValueError('Negative pagination boundary')
     return root, int(root.findtext('Count'))
+
+def check_page(root, count, expected_count, start, size, webenv=None, key=None):
+    if count != expected_count or int(root.findtext('RetStart')) != start or int(root.findtext('RetMax')) != size:
+        raise ValueError('ESearch Count or returned page boundaries mismatch')
+    for tag, expected in (('WebEnv', webenv), ('QueryKey', key)):
+        actual = root.findtext(tag)
+        # Returned history fields are optional on pages; never permit conflicting ones.
+        if actual is not None and expected is not None and actual != expected:
+            raise ValueError('History context changed: ' + tag)
+    page = [x.text for x in root.findall('IdList/Id')]
+    if len(page) != size or any(not x or not x.isdigit() for x in page):
+        raise ValueError('Invalid PMID page')
+    return page
 
 def parse_medline(body):
     """Reject ID-only payloads, embedded HTML, malformed fields and truncated records."""
     text = body.decode('utf-8', 'strict')
+    if not text.endswith('\n'):
+        raise ValueError('MEDLINE missing terminal newline; possible truncation')
     records = re.split(r'\r?\n[ \t]*\r?\n', text.strip())
     result = []
     for record in records:
         fields = {}
+        previous = None
         for line in record.splitlines():
             m = re.fullmatch(r'([A-Z][A-Z0-9]{1,3})[ \t]*-[ \t]+(.+)', line)
             if m:
                 fields.setdefault(m[1], []).append(m[2].strip())
-            elif not line.startswith('      '):
+                previous = m[1]
+            elif not line.startswith('      ') or previous is None:
                 raise ValueError('Malformed MEDLINE line')
         ids = fields.get('PMID', [])
         if len(ids) != 1 or not ids[0].isdigit() or not fields.get('TI') or not fields.get('DP'):
@@ -164,6 +214,10 @@ def execute(query_file, parent, batch_size=200, client_factory=Client, simulatio
         raw = client.request('esearch.fcgi', {'db': 'pubmed', 'term': query,
             'retmax': 0, 'usehistory': 'y', 'retmode': 'xml'}, 'esearch_initial')
         root, count = parse_search(raw)
+        if int(root.findtext('RetStart')) != 0 or int(root.findtext('RetMax')) != 0 or root.findall('IdList/Id'):
+            raise ValueError('Invalid initial retmax=0 response')
+        if not root.findtext('WebEnv') or not (root.findtext('QueryKey') or '').isdigit():
+            raise ValueError('Invalid initial History identity, including zero results')
         observe('VALID_SEARCH_RESULT')
         report['status'] = 'INCOMPLETE'
         report.update(count=count, query_translation=root.findtext('QueryTranslation'),
@@ -179,9 +233,9 @@ def execute(query_file, parent, batch_size=200, client_factory=Client, simulatio
             root, n = parse_search(client.request('esearch.fcgi', {'db': 'pubmed',
                 'term': '#' + key, 'WebEnv': webenv, 'retstart': start,
                 'retmax': min(batch_size, count-start), 'retmode': 'xml'}, 'esearch_' + str(start)))
-            page = [x.text for x in root.findall('IdList/Id')]
-            if n != count or len(page) != min(batch_size, count-start):
-                raise ValueError('ESearch page incomplete or Count changed')
+            page = check_page(root,n,count,start,min(batch_size,count-start),webenv,key)
+            if set(ids).intersection(page):
+                raise ValueError('Overlapping pages')
             ids.extend(page)
         write_json(out / 'pmids_ordered.json', ids)
         if len(ids) != count or len(set(ids)) != count or any(not x or not x.isdigit() for x in ids):
@@ -199,20 +253,37 @@ def execute(query_file, parent, batch_size=200, client_factory=Client, simulatio
         if len(fetched) != count or set(fetched) != set(ids) or len(set(fetched)) != count:
             raise ValueError('Global EFetch completeness mismatch')
         report.update(status='API_RETRIEVAL_COMPLETE', fetched_count=len(fetched))
-    except Exception as exc:
+        report['content_integrity'] = 'TRANSPORT_AND_FORMAT_CHECKED; SEMANTIC_TRUNCATION_NOT_EXCLUDED'
+    except (Exception, KeyboardInterrupt) as exc:
         report['errors'].append(str(exc))
     finally:
-        write_json(out / 'run_metadata.json', dict(metadata, completed_utc=now()))
+        try:
+            write_json(out / 'run_metadata.json', dict(metadata, completed_utc=now()))
+        except OSError as exc:
+            report['status'] = 'FAILED'
+            report['errors'].append('Metadata finalization: ' + str(exc))
         if not (out / 'pmids_ordered.json').exists():
-            write_json(out / 'pmids_partial.json', ids)
+            try:
+                write_json(out / 'pmids_partial.json', ids)
+            except OSError as exc:
+                report['status'] = 'FAILED'
+                report['errors'].append('Partial PMID persistence: ' + str(exc))
         report['reconciliation'] = {'requested_count': len(ids), 'fetched_count': len(fetched),
             'missing': sorted(set(ids)-set(fetched)), 'unexpected': sorted(set(fetched)-set(ids)),
             'duplicate_fetched_count': len(fetched)-len(set(fetched))}
         report.update(run_id=run_id, ncbi_accessed=metadata['ncbi_accessed'], completed_utc=now())
-        write_json(out / 'final_report.json', report)
-        manifest = [{'path': p.name, 'bytes': p.stat().st_size, 'sha256': sha(p.read_bytes())}
-                    for p in sorted(out.iterdir()) if p.is_file()]
-        write_json(out / 'sha256_manifest.json', {'base': '.', 'files': manifest})
+        try:
+            write_json(out / 'final_report.json', report)
+            manifest = [{'path': p.name, 'bytes': p.stat().st_size, 'sha256': sha(p.read_bytes())}
+                        for p in sorted(out.iterdir()) if p.is_file()]
+            write_json(out / 'sha256_manifest.json', {'base': '.', 'files': manifest})
+        except OSError as exc:
+            report['status'] = 'FAILED'
+            report['errors'].append('Evidence finalization: ' + str(exc))
+            try:
+                write_json(out / ('finalization_failure_' + uuid.uuid4().hex + '.json'), report)
+            except OSError:
+                print('Evidence storage unavailable: ' + str(exc), file=sys.stderr)
     return out, report
 
 def main():

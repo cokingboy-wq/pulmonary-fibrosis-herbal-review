@@ -12,7 +12,7 @@ spec.loader.exec_module(m)
 QUERY = Path(__file__).resolve().parents[1] / '02_Search_Strategies/PubMed_SR-PUBMED-001_query.txt'
 
 def search(ids='', count=3):
-    return ('<eSearchResult><Count>'+str(count)+'</Count><QueryTranslation>test</QueryTranslation><WebEnv>w</WebEnv><QueryKey>1</QueryKey><IdList>'+''.join('<Id>'+i+'</Id>' for i in ids.split(',') if i)+'</IdList></eSearchResult>').encode()
+    return ('<eSearchResult><Count>'+str(count)+'</Count><RetStart>'+str(2 if ids=='3' else 0)+'</RetStart><RetMax>'+str(len(ids.split(',')) if ids else 0)+'</RetMax><QueryTranslation>test</QueryTranslation><WebEnv>w</WebEnv><QueryKey>1</QueryKey><IdList>'+''.join('<Id>'+i+'</Id>' for i in ids.split(',') if i)+'</IdList></eSearchResult>').encode()
 
 class Fake:
     responses = []
@@ -69,7 +69,8 @@ class Tests(unittest.TestCase):
             code=200;headers={}
             def __enter__(self):return self
             def __exit__(self,*a):pass
-            def read(self):return b'not XML'
+            def read(self, size=-1):
+                b=getattr(self,'b',b'not XML');self.b=b'';return b
         with tempfile.TemporaryDirectory() as d:
             out,r=m.execute(QUERY,d,simulation=True,opener=lambda *a,**k:Response(),sleep=lambda x:None)
             self.assertEqual(json.loads((out/'run_metadata.json').read_text())['request_state'],'HTTP_RESPONSE_RECEIVED')
@@ -80,7 +81,8 @@ class Tests(unittest.TestCase):
             def __init__(self,b):self.b=b
             def __enter__(self):return self
             def __exit__(self,*a):pass
-            def read(self):return self.b
+            def read(self, size=-1):
+                b,self.b=self.b,b"";return b
         with tempfile.TemporaryDirectory() as d:
             values=iter([Response(x) for x in self.good()[:4]]+[TimeoutError('midstream')])
             def opener(*a,**kw):
@@ -100,7 +102,7 @@ class Tests(unittest.TestCase):
             code=200;headers={}
             def __enter__(self):return self
             def __exit__(self,*a):pass
-            def read(self):raise http.client.IncompleteRead(b'PMID- 1',20)
+            def read(self, size=-1):raise http.client.IncompleteRead(b'PMID- 1',20)
         with tempfile.TemporaryDirectory() as d:
             c=m.Client(d,opener=lambda *a,**k:Response(),sleep=lambda x:None,retries=0)
             with self.assertRaises(http.client.IncompleteRead):c.request('efetch.fcgi',{},'partial')
@@ -116,7 +118,8 @@ class Tests(unittest.TestCase):
             code=200;headers={}
             def __enter__(self): return self
             def __exit__(self,*a): pass
-            def read(self): return b'\x00\xff\r\n'
+            def read(self, size=-1):
+                b=getattr(self,'b',b'\x00\xff\r\n');self.b=b'';return b
         with tempfile.TemporaryDirectory() as d:
             with patch.object(m.urllib.request,'urlopen',side_effect=[TimeoutError('timeout'),Response()]) as op:
                 c=m.Client(d,sleep=lambda x:None);b=c.request('einfo.fcgi',{},'test')

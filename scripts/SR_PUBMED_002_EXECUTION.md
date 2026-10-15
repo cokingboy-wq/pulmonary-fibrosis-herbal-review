@@ -15,9 +15,11 @@ Importing modules and all committed unit tests use no live NCBI requests.
   Simulations use SIMULATION identities and always keep ncbi_accessed false.
 * API_RETRIEVAL_COMPLETE is separate from PENDING_WEB_EVIDENCE. Failure before a
   valid initial search is FAILED; later incomplete retrieval is INCOMPLETE.
-* Raw bytes, partial IncompleteRead bytes, per-attempt logs, partial PMID lists,
+* Raw bytes are written incrementally; Content-Length is checked when present,
+  non-identity encodings are refused and partial IncompleteRead bytes retained.
+  Per-attempt started/finished logs, partial PMID lists,
   batch reconciliation, metadata and hashes are retained on handled errors.
-  Transport exceptions without an exposed partial body cannot recover unseen bytes.
+  Transport exceptions cannot recover bytes not yet returned by the HTTP library.
 * MEDLINE records require one numeric PMID, TI and DP; AU/JT/MH are not universally
   mandatory across all PubMed record types. Malformed lines and wrong batch IDs fail.
   Record field validation cannot prove that every abstract sentence is untruncated.
@@ -29,5 +31,17 @@ Importing modules and all committed unit tests use no live NCBI requests.
 * Abrupt runner cancellation or storage failure may interrupt finalization or upload.
   A future run is not accepted until its artifact and local hashes are verified.
 * No filtering tables or PRISMA counts are written by this program.
+
+Offline ZIP acceptance (extracts only to a new destination):
+python scripts/verify_sr_pubmed_002_artifact.py --zip evidence.zip --destination new-download
+
+The verifier independently parses logs, XML, MEDLINE, hashes, saved ID order and
+report reconciliation. It returns VERIFIED_API_RETRIEVAL, VERIFIED_INCOMPLETE,
+VERIFIED_FAILURE or INVALID_EVIDENCE. Simulated artifacts remain explicitly
+marked simulation and cannot serve as real external connectivity evidence.
+The manifest and ZIP digests must be anchored to separately retained GitHub upload
+metadata; self-consistent hashes alone cannot authenticate an entire forged ZIP.
+MEDLINE terminal newline/structure checks do not prove semantic completeness of
+a syntactically valid silently truncated body. No extra network cross-check is added.
 
 Offline verification: python -m unittest discover -s tests -v
