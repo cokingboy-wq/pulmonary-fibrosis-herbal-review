@@ -140,6 +140,9 @@ def parse_search(body):
     root = ET.fromstring(body)
     if root.find('.//ERROR') is not None or root.find('.//ErrorList') is not None:
         raise ValueError('ESearch server error')
+    warnings = [x.text or '' for x in root.findall('.//WarningList/OutputMessage')]
+    if any('wrong subquery' in message.lower() for message in warnings):
+        raise ValueError('ESearch History error: ' + '; '.join(warnings))
     if root.tag != 'eSearchResult' or int(root.findtext('Count')) < 0:
         raise ValueError('Invalid ESearch result')
     for tag in ('RetStart', 'RetMax', 'IdList', 'QueryTranslation'):
@@ -233,7 +236,7 @@ def execute(query_file, parent, batch_size=200, client_factory=Client, simulatio
         ids = []
         for start in range(0, count, batch_size):
             root, n = parse_search(client.request('esearch.fcgi', {'db': 'pubmed',
-                'term': '#' + key, 'WebEnv': webenv, 'retstart': start,
+                'term': '#' + key, 'WebEnv': webenv, 'usehistory': 'y', 'retstart': start,
                 'retmax': min(batch_size, count-start), 'retmode': 'xml'}, 'esearch_' + str(start)))
             page = check_page(root,n,count,start,min(batch_size,count-start),webenv,key)
             if set(ids).intersection(page):

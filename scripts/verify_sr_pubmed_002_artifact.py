@@ -76,6 +76,7 @@ def verify_directory(base):
             for e in pages:
                 p=e['parameters']; r=ET.fromstring((base/e['file']).read_bytes()); n=int(p['retmax'])
                 if p.get('retmode')!='xml':raise ValueError('Wrong page format')
+                if p.get('usehistory')!='y':raise ValueError('History page request missing usehistory=y')
                 if p.get('WebEnv')!=web or p.get('term')!='#'+key or int(p['retstart'])!=position:raise ValueError('History/gap/order mismatch')
                 if r.tag!='eSearchResult' or int(r.findtext('Count'))!=count or int(r.findtext('RetStart'))!=position or int(r.findtext('RetMax'))!=n:raise ValueError('Page boundary mismatch')
                 for tag,expected in [('WebEnv',web),('QueryKey',key)]:
