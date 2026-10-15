@@ -1,25 +1,34 @@
-name: SR-PUBMED-002 preflight
-on:
-  workflow_dispatch:
-permissions:
-  contents: read
-jobs:
-  preflight:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.x'
-      - name: Verify frozen configuration and hashes (offline)
-        run: |
-          python - <<'PY'
-          import hashlib, json
-          c=json.load(open('02_Search_Strategies/SR-PUBMED-002-000_config_freeze.json'))
-          assert c['status']=='FROZEN_FOR_PREPARATION_ONLY' and c['formal_execution_started'] is False and c['run_id'] is None
-          q=c['runner_source_file']; h=hashlib.sha256(open(q,'rb').read()).hexdigest(); assert h==c['source_sha256']
-          print('Offline configuration and SHA256 checks passed; no NCBI access.')
-          PY
-      - name: Run dry-run only
-        run: python scripts/sr_pubmed_002.py --query-file 02_Search_Strategies/PubMed_SR-PUBMED-001_query.txt --output-dir 04_Search_Audit/SR-PUBMED-002/RUN-001 --run-id PREPARATION-ONLY --dry-run
+{
+  "name": "SR-PUBMED-002 preflight",
+  "on": {
+    "workflow_dispatch": {}
+  },
+  "permissions": {
+    "contents": "read"
+  },
+  "jobs": {
+    "preflight": {
+      "runs-on": "ubuntu-latest",
+      "timeout-minutes": 5,
+      "steps": [
+        {
+          "uses": "actions/checkout@v4"
+        },
+        {
+          "uses": "actions/setup-python@v5",
+          "with": {
+            "python-version": "3.x"
+          }
+        },
+        {
+          "name": "Verify frozen configuration and hashes (offline)",
+          "run": "python - <<'PY'\nimport hashlib,json\nc=json.load(open('02_Search_Strategies/SR-PUBMED-002-000_config_freeze.json'))\nassert c['status']=='FROZEN_FOR_PREPARATION_ONLY' and c['formal_execution_started'] is False and c['run_id'] is None\nassert hashlib.sha256(open(c['runner_source_file'],'rb').read()).hexdigest()==c['source_sha256']\nprint('Offline checks passed; no NCBI access')\nPY"
+        },
+        {
+          "name": "Run dry-run only",
+          "run": "python scripts/sr_pubmed_002.py --query-file 02_Search_Strategies/PubMed_SR-PUBMED-001_query.txt --output-dir 04_Search_Audit/SR-PUBMED-002/RUN-001 --run-id PREPARATION-ONLY --dry-run"
+        }
+      ]
+    }
+  }
+}
