@@ -30,7 +30,7 @@
         {
           "name": "Run all offline tests in isolated network namespace",
           "shell": "bash",
-          "run": "set -euo pipefail\nPYTHON=\"$(command -v python)\"\nHOST_NETNS=\"$(readlink /proc/self/ns/net)\"\nOUTPUT=\"$GITHUB_WORKSPACE/04_Search_Audit/SR-PUBMED-002-001-G/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT\"\nsudo --preserve-env=GITHUB_REPOSITORY,GITHUB_RUN_ID,GITHUB_RUN_ATTEMPT,GITHUB_SHA,RUNNER_NAME,ImageOS,ImageVersion unshare --net -- setpriv --reuid=\"$(id -u)\" --regid=\"$(id -g)\" --clear-groups --bounding-set=-all --inh-caps=-all --ambient-caps=-all --no-new-privs \"$PYTHON\" scripts/run_pubmed_offline_acceptance.py --output-dir \"$OUTPUT\" --host-netns \"$HOST_NETNS\""
+          "run": "python scripts/launch_pubmed_offline_acceptance.py --output-dir \"$GITHUB_WORKSPACE/04_Search_Audit/SR-PUBMED-002-001-G/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT\""
         },
         {
           "name": "Preserve infrastructure failure when audit launcher did not start",
@@ -44,7 +44,7 @@
           "uses": "actions/upload-artifact@v4",
           "with": {
             "name": "SR-PUBMED-002-001-G-${{ github.run_id }}-${{ github.run_attempt }}",
-            "path": "04_Search_Audit/SR-PUBMED-002-001-G/${{ github.run_id }}-${{ github.run_attempt }}/",
+            "path": "04_Search_Audit/SR-PUBMED-002-001-G/${{ github.run_id }}-${{ github.run_attempt }}/\n04_Search_Audit/SR-PUBMED-002-001-G/${{ github.run_id }}-${{ github.run_attempt }}-launcher/",
             "retention-days": 90,
             "if-no-files-found": "warn"
           }

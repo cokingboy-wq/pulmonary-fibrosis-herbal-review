@@ -21,18 +21,24 @@ def write(out,name,value):
     with (out/name).open('x',encoding='utf-8') as f:json.dump(value,f,indent=2)
 def digest(b):return hashlib.sha256(b).hexdigest()
 
+def route_table_safe(routes):
+    # iproute2 JSON is the authoritative table; /proc/net/route can be empty
+    # (not even a header) for an isolated unprivileged process on hosted kernels.
+    return isinstance(routes,list) and not any(r.get('type') not in ('unreachable','blackhole','prohibit') for r in routes)
+
 def isolation(host_namespace):
     current=os.readlink('/proc/self/ns/net')
     status=dict(line.split(':',1) for line in Path('/proc/self/status').read_text().splitlines() if ':' in line)
     interfaces=socket.if_nameindex()
     route=Path('/proc/net/route').read_text()
     route6=Path('/proc/net/ipv6_route').read_text()
+    ipv4_routes=json.loads(subprocess.check_output(['ip','-j','-4','route','show','table','all'],text=True))
     ipv6_routes=json.loads(subprocess.check_output(['ip','-j','-6','route','show','table','all'],text=True))
     evidence={'method':'unshare --net; setpriv non-root, no capabilities and no_new_privs',
         'host_namespace':host_namespace,'test_namespace':current,'interfaces':interfaces,
         'uid':os.getuid(),'CapEff':status['CapEff'].strip(),
         'CapBnd':status['CapBnd'].strip(),'NoNewPrivs':status['NoNewPrivs'].strip(),
-        'ipv4_routes':route,'ipv6_routes':route6,'ipv6_route_details':ipv6_routes,'probe_target':'192.0.2.1:443 (documentation address; no NCBI access)'}
+        'ipv4_routes':route,'ipv4_route_details':ipv4_routes,'ipv6_routes':route6,'ipv6_route_details':ipv6_routes,'probe_target':'192.0.2.1:443 (documentation address; no NCBI access)'}
     with socket.socket() as probe:
         probe.settimeout(1)
         code=probe.connect_ex(('192.0.2.1',443))
@@ -40,8 +46,7 @@ def isolation(host_namespace):
     evidence['effective']=(current!=host_namespace and os.getuid()!=0
         and int(evidence['CapEff'],16)==0 and int(evidence['CapBnd'],16)==0
         and evidence['NoNewPrivs']=='1' and {n for i,n in interfaces}=={'lo'}
-        and len(route.strip().splitlines())==1
-        and not any(r.get('type') not in ('unreachable','blackhole','prohibit') for r in ipv6_routes)
+        and route_table_safe(ipv4_routes) and route_table_safe(ipv6_routes)
         and code in (errno.ENETUNREACH,errno.EHOSTUNREACH))
     return evidence
 
@@ -65,11 +70,13 @@ def main():
             and hashes['body_sha256']=='9db3953a99b295813d21f30e3af8af278b13d45c154be8bb794a878cb27f6ddf' and len(q)==1698)
         if not hashes['match']:raise ValueError('Frozen hashes or length mismatch')
         net=isolation(a.host_netns)
+        print('ISOLATION_DIAGNOSTICS '+json.dumps(net),flush=True)
         if not net['effective']:raise ValueError('Network namespace isolation verification failed')
         before=time.monotonic()
         with (out/'offline-test-results.txt').open('x',encoding='utf-8') as log:
             proc=subprocess.run([sys.executable,'-m','unittest','discover','-s','tests','-v'],stdout=log,stderr=subprocess.STDOUT,timeout=900)
         content=(out/'offline-test-results.txt').read_text()
+        print(content,flush=True)
         ran=re.search(r'Ran (\d+) tests? in ([0-9.]+)s',content)
         outcome=re.findall(r'^(?:OK|FAILED)(?: \(([^\n]*)\))?$',content,re.M)
         counts={k:int(v) for k,v in re.findall(r'(failures|errors|skipped)=(\d+)',outcome[-1] if outcome else '')}
@@ -82,6 +89,8 @@ def main():
         if summary['status']!='PASS':errors.append('Actual unittest run did not pass')
     except Exception as exc:
         errors.append(str(exc))
+        print('OFFLINE_ACCEPTANCE_ERROR: '+str(exc),file=sys.stderr,flush=True)
+        traceback.print_exc()
         with (out/'infrastructure-errors.txt').open('x',encoding='utf-8') as f:f.write(traceback.format_exc())
     finally:
         if not (out/'offline-test-results.txt').exists():
