@@ -1,6 +1,7 @@
 """Explicitly gated PubMed retrieval; importing this module never uses the network."""
 import argparse
 import hashlib
+import http.client
 import json
 import os
 import platform
@@ -43,20 +44,23 @@ def write_json(path, value):
         json.dump(value, f, indent=2, ensure_ascii=False)
 
 class Client:
-    def __init__(self, out, timeout=30, retries=2, delay=0.4, opener=None, sleep=time.sleep):
+    def __init__(self, out, timeout=30, retries=2, delay=0.4, opener=None, sleep=time.sleep, observer=None):
         self.out, self.timeout, self.retries = Path(out), timeout, retries
         self.delay, self.opener, self.sleep = delay, opener or urllib.request.urlopen, sleep
         self.attempts = []
+        self.observer = observer or (lambda state: None)
 
     def request(self, endpoint, params, name):
         encoded = urllib.parse.urlencode(params).encode('ascii')
         for attempt in range(self.retries + 1):
+            path = None
             self.sleep(self.delay if attempt == 0 else max(self.delay, 2 ** attempt))
             entry = {'timestamp_utc': now(), 'endpoint': BASE + endpoint,
                      'method': 'POST', 'parameters': params, 'attempt': attempt + 1,
                      'batch': name}
             started = time.monotonic()
             retry = False
+            self.observer('REQUEST_ATTEMPTED')
             try:
                 req = urllib.request.Request(BASE + endpoint, data=encoded,
                     headers={'User-Agent': 'PulmonaryFibrosisSR/2',
@@ -68,10 +72,18 @@ class Client:
                 with response as r:
                     entry['http_status'] = r.code
                     entry['headers'] = dict(r.headers)
-                    body = r.read()
-                path = self.out / (name + '.attempt' + str(attempt + 1) + '.raw')
-                with path.open('xb') as f:
-                    f.write(body)
+                    self.observer('HTTP_RESPONSE_RECEIVED')
+                    path = self.out / (name + '.attempt' + str(attempt + 1) + '.raw')
+                    with path.open('xb') as f:
+                        try:
+                            body = r.read()
+                            f.write(body)
+                        except http.client.IncompleteRead as exc:
+                            f.write(exc.partial)
+                            raise
+                        finally:
+                            f.flush()
+                    entry.update(file=path.name, bytes=path.stat().st_size, sha256=sha(path.read_bytes()))
                 if path.read_bytes() != body:
                     raise ValueError('Persistence mismatch')
                 entry.update(file=path.name, bytes=len(body), sha256=sha(body))
@@ -80,8 +92,12 @@ class Client:
                 if status != 200:
                     raise ValueError('HTTP ' + str(status))
                 return body
-            except (OSError, ValueError) as exc:
+            except (OSError, ValueError, http.client.HTTPException) as exc:
                 entry['error'] = str(exc)
+                if path is not None and path.exists():
+                    entry.update(file=path.name, bytes=path.stat().st_size, sha256=sha(path.read_bytes()))
+                if isinstance(exc, http.client.HTTPException):
+                    retry = True
                 if 'http_status' not in entry:
                     retry = isinstance(exc, OSError)
                 if not retry or attempt == self.retries:
@@ -97,27 +113,59 @@ def parse_search(body):
     root = ET.fromstring(body)
     if root.find('ERROR') is not None or root.find('ErrorList') is not None:
         raise ValueError('ESearch server error')
+    if root.tag != 'eSearchResult' or int(root.findtext('Count')) < 0:
+        raise ValueError('Invalid ESearch result')
     return root, int(root.findtext('Count'))
 
-def execute(query_file, parent, batch_size=200, client_factory=Client, **options):
+def parse_medline(body):
+    """Reject ID-only payloads, embedded HTML, malformed fields and truncated records."""
+    text = body.decode('utf-8', 'strict')
+    records = re.split(r'\r?\n[ \t]*\r?\n', text.strip())
+    result = []
+    for record in records:
+        fields = {}
+        for line in record.splitlines():
+            m = re.fullmatch(r'([A-Z][A-Z0-9]{1,3})[ \t]*-[ \t]+(.+)', line)
+            if m:
+                fields.setdefault(m[1], []).append(m[2].strip())
+            elif not line.startswith('      '):
+                raise ValueError('Malformed MEDLINE line')
+        ids = fields.get('PMID', [])
+        if len(ids) != 1 or not ids[0].isdigit() or not fields.get('TI') or not fields.get('DP'):
+            raise ValueError('Missing MEDLINE PMID/TI/DP or multiple PMID fields')
+        result.extend(ids)
+    return result
+
+def execute(query_file, parent, batch_size=200, client_factory=Client, simulation=False, **options):
     query = load_query(query_file)  # Reject before creating any run identity.
-    run_id = 'SR-PUBMED-002-' + datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ') + '-' + uuid.uuid4().hex[:12]
+    run_id = ('SIMULATION-' if simulation else 'SR-PUBMED-002-') + datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ') + '-' + uuid.uuid4().hex[:12]
     out = Path(parent) / run_id
     out.mkdir(parents=True, exist_ok=False)
-    metadata = {'run_id': run_id, 'execution_started': True, 'ncbi_accessed': False,
+    metadata = {'run_id': run_id, 'simulation': simulation, 'execution_started': True, 'ncbi_accessed': False,
+        'request_state': 'NOT_ATTEMPTED',
         'query_sha256': EXPECTED, 'timestamp_utc': now(), 'python': platform.python_version(),
         'runner': platform.platform(), 'github_run_id': os.getenv('GITHUB_RUN_ID'),
         'github_run_attempt': os.getenv('GITHUB_RUN_ATTEMPT'), 'commit_sha': os.getenv('GITHUB_SHA')}
-    write_json(out / 'run_metadata.json', metadata)
+    write_json(out / 'run_metadata_initial.json', metadata)
     (out / 'frozen_source.txt').write_bytes(Path(query_file).read_bytes())
-    client = client_factory(out, **options)
-    report = {'status': 'FAIL', 'web_search_details': 'PENDING_EVIDENCE',
-              'web_search_history': 'PENDING_EVIDENCE', 'errors': []}
+    states = ['NOT_ATTEMPTED','REQUEST_ATTEMPTED','HTTP_RESPONSE_RECEIVED','VALID_SEARCH_RESULT']
+    def observe(state):
+        if states.index(state) > states.index(metadata['request_state']):
+            metadata['request_state'] = state
+        metadata['ncbi_accessed'] = metadata['request_state'] in states[2:] and not simulation
+        # Immutable snapshots; final run_metadata.json is created only once.
+        write_json(out / ('metadata_event_' + str(len(list(out.glob('metadata_event_*')))) + '.json'), dict(metadata, event_timestamp_utc=now()))
+    client = client_factory(out, observer=observe, **options)
+    report = {'status': 'FAILED', 'web_evidence_status': 'PENDING_WEB_EVIDENCE',
+              'web_search_details': 'PENDING_WEB_EVIDENCE',
+              'web_search_history': 'PENDING_WEB_EVIDENCE', 'batches': [], 'errors': []}
+    ids, fetched = [], []
     try:
-        metadata['ncbi_accessed'] = True
         raw = client.request('esearch.fcgi', {'db': 'pubmed', 'term': query,
             'retmax': 0, 'usehistory': 'y', 'retmode': 'xml'}, 'esearch_initial')
         root, count = parse_search(raw)
+        observe('VALID_SEARCH_RESULT')
+        report['status'] = 'INCOMPLETE'
         report.update(count=count, query_translation=root.findtext('QueryTranslation'),
                       actual_search_timestamp_utc=now())
         # PubMed ESearch cannot return more than 9999 IDs: fail closed above that limit.
@@ -143,8 +191,8 @@ def execute(query_file, parent, batch_size=200, client_factory=Client, **options
             batch = ids[start:start+batch_size]
             body = client.request('efetch.fcgi', {'db': 'pubmed', 'id': ','.join(batch),
                 'rettype': 'medline', 'retmode': 'text'}, 'efetch_' + str(start))
-            actual = re.findall(rb'(?m)^PMID[ \t]*-[ \t]+([0-9]+)[ \t]*\r?$', body)
-            actual = [x.decode('ascii') for x in actual]
+            actual = parse_medline(body)
+            report['batches'].append({'start': start, 'requested': batch, 'received': actual})
             fetched.extend(actual)
             if len(actual) != len(batch) or set(actual) != set(batch):
                 raise ValueError('EFetch batch missing, duplicate, or unexpected PMID')
@@ -154,6 +202,12 @@ def execute(query_file, parent, batch_size=200, client_factory=Client, **options
     except Exception as exc:
         report['errors'].append(str(exc))
     finally:
+        write_json(out / 'run_metadata.json', dict(metadata, completed_utc=now()))
+        if not (out / 'pmids_ordered.json').exists():
+            write_json(out / 'pmids_partial.json', ids)
+        report['reconciliation'] = {'requested_count': len(ids), 'fetched_count': len(fetched),
+            'missing': sorted(set(ids)-set(fetched)), 'unexpected': sorted(set(fetched)-set(ids)),
+            'duplicate_fetched_count': len(fetched)-len(set(fetched))}
         report.update(run_id=run_id, ncbi_accessed=metadata['ncbi_accessed'], completed_utc=now())
         write_json(out / 'final_report.json', report)
         manifest = [{'path': p.name, 'bytes': p.stat().st_size, 'sha256': sha(p.read_bytes())}
