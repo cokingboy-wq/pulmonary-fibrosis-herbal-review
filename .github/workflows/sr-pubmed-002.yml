@@ -18,7 +18,7 @@ jobs:
           import hashlib, json
           c=json.load(open('02_Search_Strategies/SR-PUBMED-002-000_config_freeze.json'))
           assert c['status']=='FROZEN_FOR_PREPARATION_ONLY' and c['formal_execution_started'] is False and c['run_id'] is None
-          q=c['source_file']; h=hashlib.sha256(open(q,'rb').read()).hexdigest(); assert h==c['source_sha256']
+          q=c['runner_source_file']; h=hashlib.sha256(open(q,'rb').read()).hexdigest(); assert h==c['source_sha256']
           print('Offline configuration and SHA256 checks passed; no NCBI access.')
           PY
       - name: Run dry-run only

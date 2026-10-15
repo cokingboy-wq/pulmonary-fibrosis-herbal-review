@@ -1,0 +1,76 @@
+{
+  "name": "SR-PUBMED-002 formal retrieval (manual confirmation required)",
+  "on": {
+    "workflow_dispatch": {
+      "inputs": {
+        "confirmation": {
+          "description": "Type EXECUTE_FROZEN_PUBMED_QUERY to authorize formal execution",
+          "required": true,
+          "type": "string"
+        },
+        "batch_size": {
+          "default": "200",
+          "type": "string"
+        },
+        "timeout": {
+          "default": "30",
+          "type": "string"
+        },
+        "retries": {
+          "default": "2",
+          "type": "string"
+        },
+        "delay": {
+          "default": "0.4",
+          "type": "string"
+        }
+      }
+    }
+  },
+  "permissions": {
+    "contents": "read"
+  },
+  "jobs": {
+    "retrieve": {
+      "runs-on": "ubuntu-latest",
+      "timeout-minutes": 60,
+      "steps": [
+        {
+          "uses": "actions/checkout@v4"
+        },
+        {
+          "uses": "actions/setup-python@v5",
+          "with": {
+            "python-version": "3.12"
+          }
+        },
+        {
+          "name": "Verify frozen file before execution",
+          "run": "python -c \"import hashlib; from pathlib import Path; assert hashlib.sha256(Path('02_Search_Strategies/PubMed_SR-PUBMED-001_query.txt').read_bytes()).hexdigest() == '13aeeda4c5138fa93e2fdeb1a4c028d5e5aaa422aad410c2e440c091f241fa51'\""
+        },
+        {
+          "name": "Run explicitly authorized retrieval",
+          "env": {
+            "CONFIRMATION": "${{ inputs.confirmation }}",
+            "BATCH": "${{ inputs.batch_size }}",
+            "TIMEOUT": "${{ inputs.timeout }}",
+            "RETRIES": "${{ inputs.retries }}",
+            "DELAY": "${{ inputs.delay }}"
+          },
+          "run": "python scripts/sr_pubmed_002_execute.py --query-file 02_Search_Strategies/PubMed_SR-PUBMED-001_query.txt --output-dir 04_Search_Audit/SR-PUBMED-002 --confirm \"$CONFIRMATION\" --batch-size \"$BATCH\" --timeout \"$TIMEOUT\" --retries \"$RETRIES\" --delay \"$DELAY\""
+        },
+        {
+          "name": "Preserve evidence even on failure",
+          "if": "always()",
+          "uses": "actions/upload-artifact@v4",
+          "with": {
+            "name": "SR-PUBMED-002-${{ github.run_id }}-${{ github.run_attempt }}",
+            "path": "04_Search_Audit/SR-PUBMED-002/",
+            "retention-days": 90,
+            "if-no-files-found": "warn"
+          }
+        }
+      ]
+    }
+  }
+}

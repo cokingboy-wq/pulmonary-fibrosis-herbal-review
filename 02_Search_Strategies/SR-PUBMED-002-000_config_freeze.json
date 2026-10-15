@@ -20,5 +20,6 @@
     "no reuse of SR-PUBMED-001 records",
     "no modification of frozen query"
   ],
-  "created_utc": "2026-10-12T00:02:31.1248483Z"
+  "created_utc": "2026-10-12T00:02:31.1248483Z",
+  "runner_source_file": "02_Search_Strategies/PubMed_SR-PUBMED-001_query.txt"
 }
